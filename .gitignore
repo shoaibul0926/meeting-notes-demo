@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+meetings/
+streamlit.log
+.streamlit/secrets.toml
