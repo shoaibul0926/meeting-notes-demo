@@ -11,7 +11,11 @@ import wave
 from pathlib import Path
 
 import numpy as np
-import soundcard as sc
+
+try:
+    import soundcard as sc
+except Exception:
+    sc = None  # no usable audio backend (e.g. headless cloud container)
 
 SAMPLE_RATE = 48000
 BLOCK = SAMPLE_RATE // 10
@@ -87,6 +91,10 @@ class MeetingRecorder:
     def start(self):
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.started_at = time.time()
+        if sc is None:
+            raise RuntimeError(
+                "No local audio backend available (this looks like a cloud/demo environment). "
+                "Run the app on your own machine to record a meeting.")
         try:
             self.captures.append(_AudioCapture(sc.default_microphone(), 1, "microphone"))
         except Exception as exc:
