@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
 meetings/
+sops/
 streamlit.log
 .streamlit/secrets.toml
+client_secret.json
+token.json

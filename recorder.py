@@ -35,9 +35,7 @@ class _AudioCapture(threading.Thread):
 
     def run(self):
         try:
-            if platform.system() == "Windows":
-                import ctypes
-                ctypes.windll.ole32.CoInitializeEx(None, 0)
+            _ensure_com()
             with self.device.recorder(samplerate=SAMPLE_RATE, channels=self.channels,
                                       blocksize=BLOCK) as rec:
                 while not self._halt.is_set():
@@ -63,6 +61,15 @@ class _AudioCapture(threading.Thread):
         if not new:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate(new)
+
+
+def _ensure_com():
+    """soundcard's Windows backend needs COM initialized on whatever thread calls it.
+    Streamlit runs the app script on its own internal thread, not the process main thread,
+    so this must be called there too, not just inside the capture threads."""
+    if platform.system() == "Windows":
+        import ctypes
+        ctypes.windll.ole32.CoInitializeEx(None, 0)
 
 
 def _screen_command(out_path):
@@ -95,6 +102,7 @@ class MeetingRecorder:
             raise RuntimeError(
                 "No local audio backend available (this looks like a cloud/demo environment). "
                 "Run the app on your own machine to record a meeting.")
+        _ensure_com()
         try:
             self.captures.append(_AudioCapture(sc.default_microphone(), 1, "microphone"))
         except Exception as exc:
@@ -107,7 +115,7 @@ class MeetingRecorder:
         except Exception as exc:
             self.warnings.append(f"Could not capture system audio ({exc}).")
         if not self.captures:
-            raise RuntimeError("No audio device available to record from.")
+            raise RuntimeError("No audio device available to record from: " + " ".join(self.warnings))
         for cap in self.captures:
             cap.start()
         if self.record_screen:
