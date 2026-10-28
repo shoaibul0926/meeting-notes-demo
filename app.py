@@ -11,6 +11,7 @@ import streamlit as st
 import followups
 import gdocs
 import sops
+from meet_bot import MeetBot
 from notes import LiveProcessor, OLLAMA_MODEL, finalize_notes, ollama_available, process_meeting
 from recorder import MeetingRecorder
 
@@ -23,6 +24,7 @@ ss = st.session_state
 ss.setdefault("rec", None)
 ss.setdefault("processor", None)
 ss.setdefault("selected", None)
+ss.setdefault("bot", None)
 
 
 def list_meetings():
@@ -135,25 +137,74 @@ if view == "SOPs":
 st.title("Meeting Recorder & Auto-Notes")
 st.caption("Records your Google Meet / Zoom call on this computer, then writes the notes automatically. 100% local and free.")
 
-if ss.rec is None:
+
+def _start_recording(folder, title, screen):
+    rec = MeetingRecorder(folder, title=title, record_screen=screen)
+    try:
+        rec.start()
+        ss.rec = rec
+        processor = LiveProcessor(rec)
+        processor.start()
+        ss.processor = processor
+    except Exception as exc:
+        st.error(f"Couldn't start recording: {exc}")
+        if ss.bot is not None:
+            ss.bot.request_leave()
+            ss.bot = None
+
+
+BOT_STATUS_LABEL = {
+    "starting": "Launching the browser...",
+    "waiting_for_admission": "Asked to join the meeting - waiting to be admitted...",
+    "in_meeting": "In the meeting - starting the recorder...",
+}
+
+if ss.bot is not None and ss.rec is None:
+    st.info(BOT_STATUS_LABEL.get(ss.bot.status, ss.bot.status))
+    if ss.bot.status == "in_meeting":
+        _start_recording(Path(ss.pending_folder), ss.pending_title, ss.pending_screen)
+        st.rerun()
+    elif ss.bot.status in ("error", "ended"):
+        if ss.bot.error:
+            st.error(f"Couldn't join the meeting: {ss.bot.error}")
+        else:
+            st.warning("The meeting ended before the bot could start recording.")
+        if st.button("Back"):
+            ss.bot = None
+            st.rerun()
+    else:
+        time.sleep(1)
+        st.rerun()
+elif ss.rec is None:
+    mode = st.radio("Meeting source", ["In person (this computer's mic + speakers)", "Join a Google Meet link"],
+                     label_visibility="visible")
     c1, c2 = st.columns([3, 2])
     title = c1.text_input("Meeting title", "Team sync")
     screen = c2.checkbox("Also record screen", value=HAS_FFMPEG, disabled=not HAS_FFMPEG,
                          help="Needs ffmpeg installed")
-    st.info("Tell everyone in the call that it's being recorded before you start.")
+    meet_url = None
+    if mode.startswith("Join"):
+        meet_url = st.text_input("Google Meet link", placeholder="https://meet.google.com/abc-defg-hij")
+        st.info("The bot joins muted with no camera and waits to be admitted - "
+                "let it in from your own Meet tab once it shows up in the lobby.")
+    else:
+        st.info("Tell everyone in the call that it's being recorded before you start.")
     if st.button("Start recording", type="primary", use_container_width=True):
-        slug = re.sub(r"[^a-zA-Z0-9]+", "-", title).strip("-").lower() or "meeting"
-        folder = MEETINGS / f"{dt.datetime.now():%Y-%m-%d_%H-%M-%S}_{slug}"
-        rec = MeetingRecorder(folder, title=title, record_screen=screen)
-        try:
-            rec.start()
-            ss.rec = rec
-            processor = LiveProcessor(rec)
-            processor.start()
-            ss.processor = processor
+        if mode.startswith("Join") and not (meet_url or "").strip():
+            st.error("Enter a Google Meet link first.")
+        else:
+            slug = re.sub(r"[^a-zA-Z0-9]+", "-", title).strip("-").lower() or "meeting"
+            folder = MEETINGS / f"{dt.datetime.now():%Y-%m-%d_%H-%M-%S}_{slug}"
+            if mode.startswith("Join"):
+                bot = MeetBot(meet_url.strip())
+                bot.start()
+                ss.bot = bot
+                ss.pending_folder = str(folder)
+                ss.pending_title = title
+                ss.pending_screen = screen
+            else:
+                _start_recording(folder, title, screen)
             st.rerun()
-        except Exception as exc:
-            st.error(f"Couldn't start recording: {exc}")
 else:
     @st.fragment(run_every=1)
     def timer():
@@ -168,7 +219,11 @@ else:
     if st.button("Stop & generate notes", type="primary", use_container_width=True):
         rec, ss.rec = ss.rec, None
         processor, ss.processor = ss.processor, None
+        bot, ss.bot = ss.bot, None
         with st.status("Finishing up...", expanded=True) as status:
+            if bot is not None:
+                status.write("Leaving the meeting...")
+                bot.request_leave()
             status.write("Finishing background transcription...")
             segments, extracted = processor.finish()
             status.write("Saving recording...")
